@@ -2,7 +2,7 @@ import math
 import torch
 import torch.distributed as dist
 from itertools import chain
-from torch import Tensor
+from torch import Tensor, TreeView
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, DTensor
 from torch.optim.optimizer import Optimizer, ParamsT
@@ -76,6 +76,7 @@ class Dion2(Optimizer):
         flatten: bool = False,
         use_triton: bool = False,
         newton_schulz_func: Optional[Callable] = None,
+        use_caution: bool = True, 
     ):
         # Chenk hyperparameter
         if lr < 0.0:
@@ -140,6 +141,11 @@ class Dion2(Optimizer):
             self._newton_schulz_func = newton_schulz_triton
         else:
             self._newton_schulz_func = zeropower_via_newtonschulz5
+        
+        if use_caution:
+            self.caution = True
+        else:
+            self.caution = False
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -465,6 +471,7 @@ def dion2_update_local_async(
     x = X[0]
     g = to_local(G)[0]  # local shard grad
     M = STATE["momentum_local"]  # local shard momentum
+    mask = get_mask(g, M)
 
     if adjust_lr is None:
         adjusted_lr = lr
@@ -477,6 +484,7 @@ def dion2_update_local_async(
 
     # Error feedback on local shard and orthonormalize fraction
     M.add_(g.to(dtype=M.dtype))
+    M.mul(mask)
     O_local = fractional_orthonormalize_update(
         M_full=M,
         fraction=float(fraction),
@@ -762,3 +770,10 @@ def dion2_update_post_orthogonalize(
     # Weight update
     U = torch._foreach_mul(U, adjusted_lr)
     torch._foreach_sub_(X, U)
+
+
+@torch.compile
+def get_mask(momentum: Tensor, grad: Tensor):
+    mask = (momentum * grad > 0).to(grad.dtype)
+    mask.div_(mask.mean().clamp_(min=1e-3))
+    return mask

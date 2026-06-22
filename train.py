@@ -26,6 +26,7 @@ from dion import Dion, DionMixedPrecisionConfig
 from dion import DionReference
 from dion import DionSimple
 from dion import Muon
+from dion import MuonP
 from dion import Muon2F
 from dion import MuonReference
 from dion import Dion2
@@ -75,6 +76,11 @@ class Hyperparameters:
     mixed_precision: bool = False
     adjust_lr: str = "spectral_norm"  # for Muon only
     muon_beta2: float = 0.95
+    muon_p_exponent: str = "1/3"
+    muon_p_steps: int = 6
+    halfpower_c: Optional[float] = None
+    halfpower_d: Optional[float] = None
+    muon_p_adjust_lr: Optional[str] = None
 
     # For printing out selection choice in Dion2
     verbose: bool = True
@@ -149,6 +155,36 @@ def parse_cli_args():
         type=float,
         default=None,
         help="Second-moment decay for Muon-family adaptive variants",
+    )
+    parser.add_argument(
+        "--muon_p_exponent",
+        type=str,
+        default=None,
+        help="MuonP fractional spectral-power exponent, e.g. 1/3, 1/2, 3/5",
+    )
+    parser.add_argument(
+        "--muon_p_steps",
+        type=int,
+        default=None,
+        help="Number of MuonP polynomial iterations",
+    )
+    parser.add_argument(
+        "--halfpower_c",
+        type=float,
+        default=None,
+        help="MuonP polynomial coefficient c",
+    )
+    parser.add_argument(
+        "--halfpower_d",
+        type=float,
+        default=None,
+        help="MuonP polynomial coefficient d for exponent 1/2",
+    )
+    parser.add_argument(
+        "--muon_p_adjust_lr",
+        type=str,
+        default=None,
+        help="Optional Dion learning-rate adjustment for MuonP; default matches upstream Muon-P scaling",
     )
     parser.add_argument("--weight_decay", type=float, default=None, help="Weight decay")
     parser.add_argument(
@@ -456,6 +492,39 @@ def init_optimizer(
             use_gram_newton_schulz=cli_args.use_gram_newton_schulz,
             use_triton=(not cli_args.no_triton),
             use_polar_express=cli_args.use_polar_express,
+        )
+    elif hp.optimizer == "muonp":
+        if device_mesh is not None:
+            # Ensure that we have a supported device mesh configuration for MuonP
+            if inner_shard_mesh is not None and inner_shard_mesh.size() > 1:
+                raise ValueError("Tensor parallel is not supported by MuonP.")
+            distributed_mesh = (
+                outer_shard_mesh if outer_shard_mesh.size() > 1 else replicate_mesh
+            )
+            comm_method = "all-to-all" if outer_shard_mesh.size() > 1 else "all-gather"
+        else:
+            assert ddp_model is not None
+            distributed_mesh = ddp_model.process_group  # using ProcessGroup for DDP
+            comm_method = "all-gather"
+        print0(f"MuonP exponent: {hp.muon_p_exponent}")
+        print0(f"MuonP polynomial steps: {hp.muon_p_steps}")
+        print0(f"MuonP coefficient c: {hp.halfpower_c}")
+        print0(f"MuonP coefficient d: {hp.halfpower_d}")
+        print0(f"MuonP LR adjust method: {hp.muon_p_adjust_lr}")
+        print0(f"Distributed MuonP using: {comm_method}")
+        opt = MuonP(
+            param_groups,
+            distributed_mesh=distributed_mesh,
+            lr=hp.lr,
+            mu=hp.mu,
+            weight_decay=hp.weight_decay,
+            nesterov=True,
+            adjust_lr=hp.muon_p_adjust_lr,
+            exponent=hp.muon_p_exponent,
+            steps=hp.muon_p_steps,
+            c=hp.halfpower_c,
+            d=hp.halfpower_d,
+            mixed_precision_config=dion_mixed_precision_config,
         )
     elif hp.optimizer == "muon2f":
         if device_mesh is not None:

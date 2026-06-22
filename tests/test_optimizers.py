@@ -245,6 +245,62 @@ def test_muon2f_step_matches_explicit_reference():
 # ---------------------------------------------------------------------------
 
 
+def test_muon_mixed_precision_state_dtypes_cpu():
+    from dion import DionMixedPrecisionConfig, Muon
+
+    param = torch.nn.Parameter(torch.randn(4, 8))
+    bias = torch.nn.Parameter(torch.randn(8))
+    opt = Muon(
+        [
+            {"params": [param]},
+            {"params": [bias], "algorithm": "adamw"},
+        ],
+        lr=0.01,
+        mixed_precision_config=DionMixedPrecisionConfig(
+            momentum_dtype=torch.bfloat16,
+            variance_dtype=torch.bfloat16,
+        ),
+    )
+
+    param_state = opt._get_or_initialize_state(param, "muon")
+    bias_state = opt._get_or_initialize_state(bias, "adamw")
+
+    assert param_state["momentum"].dtype == torch.bfloat16
+    assert bias_state["momentum"].dtype == bias.dtype
+    assert bias_state["variance"].dtype == bias.dtype
+
+
+def test_muon_mixed_precision_with_adamw_scalars_step_cpu():
+    from dion import DionMixedPrecisionConfig, Muon
+
+    def identity_ortho(x, epsilon):
+        return x
+
+    param = torch.nn.Parameter(torch.randn(4, 8))
+    bias = torch.nn.Parameter(torch.randn(8))
+    opt = Muon(
+        [
+            {"params": [param]},
+            {"params": [bias], "algorithm": "adamw"},
+        ],
+        lr=0.01,
+        adjust_lr=None,
+        newton_schulz_func=identity_ortho,
+        mixed_precision_config=DionMixedPrecisionConfig(
+            momentum_dtype=torch.bfloat16,
+            variance_dtype=torch.bfloat16,
+        ),
+    )
+
+    param.grad = torch.randn_like(param)
+    bias.grad = torch.randn_like(bias)
+    opt.step()
+
+    bias_state = opt.state[bias]
+    assert bias_state["momentum"].dtype == bias.dtype
+    assert bias_state["variance"].dtype == bias.dtype
+
+
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA required")
 class TestMuon:
     def test_basic(self):
@@ -307,6 +363,25 @@ class TestMuon:
 # ---------------------------------------------------------------------------
 # NorMuon
 # ---------------------------------------------------------------------------
+
+
+def test_normuon_mixed_precision_state_dtypes_cpu():
+    from dion import DionMixedPrecisionConfig, NorMuon
+
+    param = torch.nn.Parameter(torch.randn(4, 8))
+    opt = NorMuon(
+        [param],
+        lr=0.01,
+        mixed_precision_config=DionMixedPrecisionConfig(
+            momentum_dtype=torch.bfloat16,
+            variance_dtype=torch.bfloat16,
+        ),
+    )
+
+    state = opt._get_or_initialize_state(param, "normuon")
+
+    assert state["momentum"].dtype == torch.bfloat16
+    assert state["variance_neuron"].dtype == torch.bfloat16
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA required")

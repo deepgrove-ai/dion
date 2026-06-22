@@ -4,7 +4,7 @@ from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, DTensor
 from torch.optim.optimizer import ParamsT
-from typing import Callable, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Generator, List, Optional, Tuple, Union
 
 from .megabatch_base import (
     DistributedOrthoBase,
@@ -44,6 +44,9 @@ class NorMuon(DistributedOrthoBase):
         use_triton: Whether to use Triton kernel for Newton-Schulz. Ignored if custom function is provided.
         newton_schulz_func: Use a custom Newton-Schulz function for orthogonalization.
             Signature is ``func(input: Tensor, epsilon: float) -> Tensor``.
+        mixed_precision_config: Optional config with ``momentum_dtype`` and
+            ``variance_dtype`` fields for optimizer state storage. NorMuon uses
+            ``variance_dtype`` for its ``variance_neuron`` state.
 
     Muon optimizer algorithm by Keller Jordan: https://kellerjordan.github.io/posts/muon/
     FSDP2 Muon uses all-to-all communications: https://www.essential.ai/blog/infra
@@ -68,6 +71,7 @@ class NorMuon(DistributedOrthoBase):
         use_triton: bool = False,
         use_polar_express: bool = True,
         newton_schulz_func: Optional[Callable] = None,
+        mixed_precision_config: Optional[Any] = None,
     ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -103,12 +107,16 @@ class NorMuon(DistributedOrthoBase):
             use_triton=use_triton,
             use_polar_express=use_polar_express,
             newton_schulz_func=newton_schulz_func,
+            mixed_precision_config=mixed_precision_config,
         )
 
     def _get_or_initialize_state(self, param: Tensor, algo: str) -> dict:
         state = super()._get_or_initialize_state(param, algo)
         if algo == self._algo_name and "variance_neuron" not in state:
-            state["variance_neuron"] = torch.zeros_like(param[..., 0:1])
+            variance_dtype = self._mixed_precision_dtype("variance_dtype")
+            state["variance_neuron"] = torch.zeros_like(
+                param[..., 0:1], dtype=variance_dtype
+            )
         return state
 
     def _get_shard_info(self, param: Tensor, group: dict):

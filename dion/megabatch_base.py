@@ -7,7 +7,7 @@ from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.distributed.tensor import DeviceMesh, DTensor
 from torch.optim.optimizer import Optimizer, ParamsT
-from typing import Callable, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Generator, List, Optional, Tuple, Union
 
 from .newton_schulz_triton import (
     TRITON_AVAILABLE,
@@ -38,9 +38,11 @@ class DistributedOrthoBase(Optimizer):
         use_triton: bool = False,
         use_polar_express: bool = True,
         newton_schulz_func: Optional[Callable] = None,
+        mixed_precision_config: Optional[Any] = None,
     ):
         super().__init__(params, defaults)
         self._algo_name = algo_name
+        self._mixed_precision_config = mixed_precision_config
 
         # Distributed configuration
         if isinstance(distributed_mesh, DeviceMesh):
@@ -149,10 +151,20 @@ class DistributedOrthoBase(Optimizer):
         """Get optimizer state, or lazy-initialize if it doesn't exist."""
         state = self.state[param]
         if not state:
-            state["momentum"] = torch.zeros_like(param)
+            momentum_dtype = (
+                None
+                if algo == "adamw"
+                else self._mixed_precision_dtype("momentum_dtype")
+            )
+            state["momentum"] = torch.zeros_like(param, dtype=momentum_dtype)
             if algo == "adamw":
                 state["variance"] = torch.zeros_like(param)
         return state
+
+    def _mixed_precision_dtype(self, attr: str) -> Optional[torch.dtype]:
+        if self._mixed_precision_config is None:
+            return None
+        return getattr(self._mixed_precision_config, attr, None)
 
     def _resolve_num_heads(self, group: dict) -> Optional[int]:
         """Validate the ``num_heads`` option on a param group.
